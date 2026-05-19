@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NEON CRADLE // hand-tracked strings</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #050511;
+    --cyan: #00f0ff;
+    --magenta: #ff00d4;
+    --yellow: #ffe600;
+    --grid: rgba(0, 240, 255, 0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: 'Share Tech Mono', monospace;
+    color: var(--cyan);
+    cursor: crosshair;
+  }
+
+  #stage {
+    position: relative;
+    width: 100vw; height: 100vh;
+    background:
+      radial-gradient(ellipse at center, #0a0a22 0%, #050511 60%, #000 100%);
+  }
+
+  /* hide raw video; we paint it onto canvas ourselves */
+  #cam {
+    position: absolute;
+    width: 1px; height: 1px;
+    opacity: 0; pointer-events: none;
+  }
+
+  canvas { display: block; }
+
+  /* subtle scanline overlay above the canvas */
+  #scanlines {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,0.025) 0px,
+      rgba(255,255,255,0.025) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    mix-blend-mode: overlay;
+    z-index: 5;
+  }
+
+  /* vignette */
+  #vignette {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.85) 100%);
+    z-index: 6;
+  }
+
+  /* HUD */
+  .hud {
+    position: absolute;
+    z-index: 10;
+    font-family: 'VT323', monospace;
+    color: var(--cyan);
+    text-shadow: 0 0 6px var(--cyan);
+    letter-spacing: 2px;
+    user-select: none;
+  }
+  #hud-tl { top: 18px; left: 22px; font-size: 22px; line-height: 1.2; }
+  #hud-tl .title {
+    font-size: 30px; color: #fff;
+    text-shadow: 0 0 8px var(--cyan), 0 0 18px var(--magenta);
+    letter-spacing: 5px;
+  }
+  #hud-tl .sub { opacity: 0.8; font-size: 16px; letter-spacing: 3px; }
+
+  #hud-tr {
+    top: 18px; right: 22px;
+    font-size: 18px;
+    text-align: right;
+    line-height: 1.3;
+  }
+  #hud-tr .lbl { opacity: 0.65; }
+  #hud-tr .val { color: var(--yellow); text-shadow: 0 0 6px var(--yellow); }
+
+  #hud-br {
+    bottom: 18px; right: 22px;
+    font-size: 16px;
+    text-align: right;
+    opacity: 0.7;
+  }
+  #hud-bl {
+    bottom: 18px; left: 22px;
+    font-size: 16px;
+  }
+  .dot {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--cyan);
+    margin-right: 8px;
+    box-shadow: 0 0 10px var(--cyan);
+    animation: pulse 1.2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  .dot.warn { background: var(--magenta); box-shadow: 0 0 10px var(--magenta); }
+  .dot.ok { background: #00ff88; box-shadow: 0 0 10px #00ff88; }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  /* corner brackets */
+  .bracket {
+    position: absolute;
+    width: 28px; height: 28px;
+    border: 2px solid var(--cyan);
+    z-index: 7;
+    box-shadow: 0 0 8px var(--cyan);
+    opacity: 0.7;
+  }
+  .bracket.tl { top: 10px; left: 10px; border-right: none; border-bottom: none; }
+  .bracket.tr { top: 10px; right: 10px; border-left: none; border-bottom: none; }
+  .bracket.bl { bottom: 10px; left: 10px; border-right: none; border-top: none; }
+  .bracket.br { bottom: 10px; right: 10px; border-left: none; border-top: none; }
+
+  /* loader / permission screen */
+  #boot {
+    position: absolute; inset: 0;
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column;
+    background: radial-gradient(ellipse at center, #0a0a22, #000);
+    color: var(--cyan);
+    font-family: 'VT323', monospace;
+    text-align: center;
+  }
+  #boot h1 {
+    font-size: 64px; letter-spacing: 8px; margin: 0;
+    text-shadow: 0 0 10px var(--cyan), 0 0 30px var(--magenta), 0 0 60px var(--magenta);
+  }
+  #boot p { font-size: 20px; opacity: 0.8; max-width: 420px; line-height: 1.4; }
+  #boot .err { color: var(--magenta); text-shadow: 0 0 8px var(--magenta); }
+  #boot button {
+    margin-top: 18px;
+    background: transparent;
+    border: 2px solid var(--cyan);
+    color: var(--cyan);
+    font-family: 'VT323', monospace;
+    font-size: 24px;
+    letter-spacing: 4px;
+    padding: 10px 32px;
+    cursor: pointer;
+    box-shadow: 0 0 15px var(--cyan), inset 0 0 15px rgba(0,240,255,0.2);
+    transition: all 0.15s ease;
+  }
+  #boot button:hover {
+    background: var(--cyan); color: #000;
+    box-shadow: 0 0 25px var(--cyan), 0 0 50px var(--magenta);
+  }
+  .blink { animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="cam" autoplay playsinline muted></video>
+
+  <!-- corner brackets -->
+  <div class="bracket tl"></div>
+  <div class="bracket tr"></div>
+  <div class="bracket bl"></div>
+  <div class="bracket br"></div>
+
+  <!-- HUD overlays -->
+  <div id="hud-tl" class="hud">
+    <div class="title">NEON CRADLE</div>
+    <div class="sub">// dual-hand string synthesis v1.0</div>
+  </div>
+
+  <div id="hud-tr" class="hud">
+    <div><span class="lbl">HANDS</span> <span class="val" id="vHands">0</span></div>
+    <div><span class="lbl">FPS</span> <span class="val" id="vFps">--</span></div>
+    <div><span class="lbl">TENSION</span> <span class="val" id="vTension">0.00</span></div>
+  </div>
+
+  <div id="hud-bl" class="hud">
+    <span class="dot" id="dot"></span>
+    <span id="status">BOOTING...</span>
+  </div>
+
+  <div id="hud-br" class="hud">
+    raise both hands &middot; pull strings taut to ignite
+  </div>
+
+  <div id="scanlines"></div>
+  <div id="vignette"></div>
+
+  <!-- Boot screen -->
+  <div id="boot">
+    <h1>NEON CRADLE</h1>
+    <p>This experience requires camera access to track your hands. The feed stays on your device — nothing is uploaded.</p>
+    <button id="startBtn">&gt; INITIATE</button>
+    <p id="bootMsg" style="margin-top:24px; min-height:24px;"></p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+/* =====================================================================
+   NEON CRADLE - hand-tracked cat's cradle
+   ===================================================================== */
+
+const FINGER_TIPS = [4, 8, 12, 16, 20]; // thumb, index, middle, ring, pinky
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],            // thumb
+  [0,5],[5,6],[6,7],[7,8],            // index
+  [5,9],[9,10],[10,11],[11,12],       // middle
+  [9,13],[13,14],[14,15],[15,16],     // ring
+  [13,17],[17,18],[18,19],[19,20],    // pinky
+  [0,17]                               // palm
+];
+
+// Palette tuned for fingertip strings: cyan -> magenta -> yellow -> magenta -> cyan
+const STRING_COLORS = [
+  { r: 0,   g: 240, b: 255 },  // thumb  - cyan
+  { r: 255, g: 0,   b: 212 },  // index  - magenta
+  { r: 255, g: 230, b: 0   },  // middle - yellow
+  { r: 255, g: 0,   b: 212 },  // ring   - magenta
+  { r: 0,   g: 240, b: 255 }   // pinky  - cyan
+];
+
+let videoEl;
+let hands;
+let camera;
+let latestResults = null;
+let p5Inst;
+
+// fps tracking
+let fpsBuffer = [];
+let lastFrameMs = performance.now();
+
+// global state
+let runActive = false;
+let canvasW, canvasH;
+
+// fingertip trail buffer per hand
+const trails = [ [], [] ];
+const TRAIL_LEN = 8;
+
+// ---------- Boot ----------
+const startBtn = document.getElementById('startBtn');
+const bootMsg  = document.getElementById('bootMsg');
+const bootEl   = document.getElementById('boot');
+const statusEl = document.getElementById('status');
+const dotEl    = document.getElementById('dot');
+
+startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
+  bootMsg.innerHTML = '<span class="blink">REQUESTING CAMERA...</span>';
+
+  try {
+    // Pre-request permission cleanly
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: false
+    });
+    videoEl = document.getElementById('cam');
+    videoEl.srcObject = stream;
+    await videoEl.play();
+
+    bootMsg.innerHTML = '<span class="blink">LOADING NEURAL NET...</span>';
+    await initMediaPipe();
+
+    // start p5
+    new p5(sketch);
+
+    bootEl.style.transition = 'opacity 0.8s ease';
+    bootEl.style.opacity = '0';
+    setTimeout(() => bootEl.remove(), 900);
+
+    runActive = true;
+    setStatus('TRACKING', 'ok');
+  } catch (err) {
+    console.error(err);
+    bootMsg.innerHTML = `<span class="err">ERROR: ${err.message || err}</span>`;
+    startBtn.disabled = false;
+  }
+});
+
+function setStatus(text, kind='') {
+  statusEl.innerText = text;
+  dotEl.className = 'dot' + (kind ? ' ' + kind : '');
+}
+
+// ---------- MediaPipe ----------
+async function initMediaPipe() {
+  hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.6
+  });
+
+  hands.onResults((results) => {
+    latestResults = results;
+  });
+
+  camera = new Camera(videoEl, {
+    onFrame: async () => {
+      if (runActive) await hands.send({ image: videoEl });
+    },
+    width: 1280,
+    height: 720
+  });
+  await camera.start();
+}
+
+// ---------- p5 sketch ----------
+const sketch = (p) => {
+  p.setup = () => {
+    canvasW = window.innerWidth;
+    canvasH = window.innerHeight;
+    const cnv = p.createCanvas(canvasW, canvasH);
+    cnv.parent('stage');
+    cnv.style('position', 'absolute');
+    cnv.style('top', '0');
+    cnv.style('left', '0');
+    cnv.style('z-index', '1');
+    p.pixelDensity(1);
+    p.frameRate(60);
+    p5Inst = p;
+  };
+
+  p.windowResized = () => {
+    canvasW = window.innerWidth;
+    canvasH = window.innerHeight;
+    p.resizeCanvas(canvasW, canvasH);
+  };
+
+  p.draw = () => {
+    // fps
+    const now = performance.now();
+    const dt = now - lastFrameMs;
+    lastFrameMs = now;
+    fpsBuffer.push(1000 / Math.max(dt, 1));
+    if (fpsBuffer.length > 30) fpsBuffer.shift();
+
+    const ctx = p.drawingContext;
+
+    // ----- background: dimmed mirrored video -----
+    p.background(5, 5, 17);
+
+    if (videoEl && videoEl.readyState >= 2) {
+      const vAR = videoEl.videoWidth / videoEl.videoHeight;
+      const cAR = canvasW / canvasH;
+      let dw, dh, dx, dy;
+      if (cAR > vAR) {
+        dw = canvasW; dh = canvasW / vAR;
+        dx = 0; dy = (canvasH - dh) / 2;
+      } else {
+        dh = canvasH; dw = canvasH * vAR;
+        dx = (canvasW - dw) / 2; dy = 0;
+      }
+      // mirror horizontally
+      ctx.save();
+      ctx.translate(canvasW, 0);
+      ctx.scale(-1, 1);
+      ctx.globalAlpha = 0.32;
+      ctx.filter = 'brightness(0.55) contrast(1.15) saturate(0.7) hue-rotate(180deg)';
+      ctx.drawImage(videoEl, canvasW - dx - dw, dy, dw, dh);
+      ctx.filter = 'none';
+      ctx.globalAlpha = 1.0;
+      ctx.restore();
+    }
+
+    // ----- grid wash for atmosphere -----
+    drawGrid(p, ctx);
+
+    // ----- hand processing -----
+    if (!latestResults || !latestResults.multiHandLandmarks ||
+        latestResults.multiHandLandmarks.length === 0) {
+      // fade trails
+      trails[0] = []; trails[1] = [];
+      updateHUD(0, 0);
+      return;
+    }
+
+    const rawHands = latestResults.multiHandLandmarks;
+    const handedness = latestResults.multiHandedness || [];
+
+    // Map landmarks to mirrored canvas coords
+    const handPoints = rawHands.map(landmarks =>
+      landmarks.map(lm => ({
+        x: (1 - lm.x) * canvasW,
+        y: lm.y * canvasH,
+        z: lm.z
+      }))
+    );
+
+    // Determine which is the user's left vs right (after mirroring)
+    // MediaPipe labels relative to camera image. We mirror, so swap.
+    let leftIdx = -1, rightIdx = -1;
+    for (let i = 0; i < rawHands.length; i++) {
+      const lbl = handedness[i] && handedness[i].label;
+      // After mirroring: MP "Right" appears on user's left side of screen, etc.
+      // We just want two indices; assign by screen x-position for reliability.
+    }
+    if (handPoints.length === 1) {
+      leftIdx = 0;
+    } else {
+      // assign by wrist x (landmark 0): smaller x = left side of screen = user's left hand
+      if (handPoints[0][0].x <= handPoints[1][0].x) {
+        leftIdx = 0; rightIdx = 1;
+      } else {
+        leftIdx = 1; rightIdx = 0;
+      }
+    }
+
+    // ----- draw skeleton + glow -----
+    for (let h = 0; h < handPoints.length; h++) {
+      const isLeft = (h === leftIdx);
+      drawSkeleton(p, ctx, handPoints[h], isLeft);
+    }
+
+    // ----- draw landmark dots -----
+    for (let h = 0; h < handPoints.length; h++) {
+      const isLeft = (h === leftIdx);
+      drawLandmarks(p, ctx, handPoints[h], isLeft);
+    }
+
+    // ----- fingertip trails -----
+    for (let h = 0; h < 2; h++) {
+      const idx = h === 0 ? leftIdx : rightIdx;
+      if (idx < 0 || idx >= handPoints.length) { trails[h] = []; continue; }
+      const tip = handPoints[idx][8]; // index fingertip leads the trail
+      trails[h].push({ x: tip.x, y: tip.y });
+      if (trails[h].length > TRAIL_LEN) trails[h].shift();
+    }
+    drawTrails(p, ctx);
+
+    // ----- the strings: connect tip-to-tip when both hands present -----
+    let avgTension = 0;
+    if (handPoints.length >= 2 && leftIdx >= 0 && rightIdx >= 0) {
+      const L = handPoints[leftIdx];
+      const R = handPoints[rightIdx];
+      avgTension = drawStrings(p, ctx, L, R);
+    }
+
+    // ----- HUD -----
+    updateHUD(handPoints.length, avgTension);
+  };
+};
+
+// ---------- Drawing helpers ----------
+
+function drawGrid(p, ctx) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0, 240, 255, 0.05)';
+  ctx.lineWidth = 1;
+  const spacing = 60;
+  ctx.beginPath();
+  for (let x = 0; x < canvasW; x += spacing) {
+    ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, canvasH);
+  }
+  for (let y = 0; y < canvasH; y += spacing) {
+    ctx.moveTo(0, y + 0.5); ctx.lineTo(canvasW, y + 0.5);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSkeleton(p, ctx, pts, isLeft) {
+  ctx.save();
+  const baseColor = isLeft ? '#00f0ff' : '#ff00d4';
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = baseColor;
+  ctx.strokeStyle = isLeft ? 'rgba(0, 240, 255, 0.7)' : 'rgba(255, 0, 212, 0.7)';
+  ctx.lineWidth = 1.4;
+  ctx.lineCap = 'round';
+
+  ctx.beginPath();
+  for (const [a, b] of HAND_CONNECTIONS) {
+    ctx.moveTo(pts[a].x, pts[a].y);
+    ctx.lineTo(pts[b].x, pts[b].y);
+  }
+  ctx.stroke();
+
+  // second pass: bright hairline
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  for (const [a, b] of HAND_CONNECTIONS) {
+    ctx.moveTo(pts[a].x, pts[a].y);
+    ctx.lineTo(pts[b].x, pts[b].y);
+  }
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawLandmarks(p, ctx, pts, isLeft) {
+  ctx.save();
+  const palette = isLeft
+    ? ['#00f0ff', '#33ffff', '#00b8ff']
+    : ['#ff00d4', '#ff66ee', '#ff0080'];
+
+  for (let i = 0; i < pts.length; i++) {
+    const isTip = FINGER_TIPS.includes(i);
+    const r = isTip ? 7 : 3.5;
+    const glowR = isTip ? 22 : 10;
+    const c = palette[i % palette.length];
+
+    ctx.shadowBlur = glowR;
+    ctx.shadowColor = c;
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.arc(pts[i].x, pts[i].y, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // bright core
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(pts[i].x, pts[i].y, r * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawTrails(p, ctx) {
+  ctx.save();
+  for (let h = 0; h < 2; h++) {
+    const trail = trails[h];
+    if (trail.length < 2) continue;
+    const baseColor = h === 0 ? '#00f0ff' : '#ff00d4';
+    for (let i = 1; i < trail.length; i++) {
+      const a = trail[i-1], b = trail[i];
+      const t = i / trail.length;
+      ctx.globalAlpha = t * 0.6;
+      ctx.shadowBlur = 12 * t;
+      ctx.shadowColor = baseColor;
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = t * 3;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+function drawStrings(p, ctx, L, R) {
+  ctx.save();
+  const maxD = Math.min(canvasW, canvasH) * 0.7;
+  let tensionSum = 0;
+
+  for (let i = 0; i < FINGER_TIPS.length; i++) {
+    const tipIdx = FINGER_TIPS[i];
+    const a = L[tipIdx];
+    const b = R[tipIdx];
+
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.hypot(dx, dy);
+    const tension = clamp(d / maxD, 0, 1);
+    tensionSum += tension;
+
+    // elastic sag based on inverse tension
+    const slack = (1 - tension);
+    const sag = slack * 90 + 12;
+
+    // perpendicular vector for sag direction (mostly downward)
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    // sag direction: gravity-ish + slight perpendicular nudge so strings don't overlap
+    const perpAngle = Math.atan2(dy, dx) + Math.PI / 2;
+    // make 0 (thumb) sag most, others fanned
+    const fan = (i - 2) * 10;
+    const sagX = Math.cos(perpAngle) * fan;
+    const sagY = sag;
+    const ctrlX = midX + sagX;
+    const ctrlY = midY + sagY;
+
+    const col = STRING_COLORS[i];
+    const colStr = `rgb(${col.r},${col.g},${col.b})`;
+
+    // shimmer vibration along the curve
+    const vibAmp = slack * 4 + 0.5;
+    const vibFreq = 0.18;
+
+    // outer glow pass
+    ctx.shadowBlur = 22;
+    ctx.shadowColor = colStr;
+    ctx.strokeStyle = colStr;
+    ctx.lineWidth = lerp(1.0, 3.5, tension);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    const steps = 28;
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const qx = quadPoint(a.x, ctrlX, b.x, t);
+      const qy = quadPoint(a.y, ctrlY, b.y, t);
+      const v = Math.sin(p5Inst.frameCount * vibFreq + i * 1.3 + t * 9) * vibAmp;
+      // apply vibration along perpendicular
+      const px = qx + Math.cos(perpAngle) * v;
+      const py = qy + Math.sin(perpAngle) * v;
+      if (s === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // inner bright core
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `rgba(255,255,255,${0.35 + tension * 0.55})`;
+    ctx.lineWidth = lerp(0.4, 1.4, tension);
+    ctx.beginPath();
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const qx = quadPoint(a.x, ctrlX, b.x, t);
+      const qy = quadPoint(a.y, ctrlY, b.y, t);
+      const v = Math.sin(p5Inst.frameCount * vibFreq + i * 1.3 + t * 9) * vibAmp;
+      const px = qx + Math.cos(perpAngle) * v;
+      const py = qy + Math.sin(perpAngle) * v;
+      if (s === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // taut flash when string is near max stretch
+    if (tension > 0.82) {
+      const flash = (tension - 0.82) / 0.18;
+      ctx.shadowBlur = 40;
+      ctx.shadowColor = '#ffe600';
+      ctx.strokeStyle = `rgba(255, 230, 0, ${0.4 + flash * 0.6})`;
+      ctx.lineWidth = 2 + flash * 2;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+
+      // sparks at endpoints
+      drawSparks(ctx, a.x, a.y, '#ffe600');
+      drawSparks(ctx, b.x, b.y, '#ffe600');
+    }
+  }
+  ctx.restore();
+  return tensionSum / FINGER_TIPS.length;
+}
+
+function drawSparks(ctx, x, y, color) {
+  ctx.save();
+  ctx.shadowBlur = 18;
+  ctx.shadowColor = color;
+  ctx.fillStyle = color;
+  for (let i = 0; i < 4; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 8 + Math.random() * 14;
+    const sx = x + Math.cos(a) * r;
+    const sy = y + Math.sin(a) * r;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- HUD ----------
+const vHands = document.getElementById('vHands');
+const vFps = document.getElementById('vFps');
+const vTension = document.getElementById('vTension');
+
+function updateHUD(handCount, tension) {
+  vHands.innerText = String(handCount);
+  if (fpsBuffer.length > 5) {
+    const avg = fpsBuffer.reduce((s,v) => s+v, 0) / fpsBuffer.length;
+    vFps.innerText = avg.toFixed(0);
+  }
+  vTension.innerText = tension.toFixed(2);
+  if (handCount === 0) setStatus('NO HANDS DETECTED', 'warn');
+  else if (handCount === 1) setStatus('SHOW BOTH HANDS', 'warn');
+  else setStatus('TRACKING', 'ok');
+}
+
+// ---------- math ----------
+function clamp(v, a, b) { return Math.min(b, Math.max(a, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function quadPoint(p0, p1, p2, t) {
+  const u = 1 - t;
+  return u*u*p0 + 2*u*t*p1 + t*t*p2;
+}
+</script>
+
+</body>
+</html>
